@@ -465,16 +465,37 @@ export class UpdateService {
     }
 
     /**
-     * Fix file ownership to match Plesk Passenger expectations.
-     * Uses chown -R systego:psacln (same as ClientProvisioner.ts).
+     * Fix file ownership and permissions to match Plesk expectations.
+     * 
+     * Plesk Apache/Nginx requires:
+     *  - Ownership: systego:psacln (domain user + Plesk group)
+     *  - Directories: 755 (rwxr-xr-x)
+     *  - Files: 644 (rw-r--r--)
+     * 
+     * Without this, the web server returns 403 Forbidden.
      */
     private async fixOwnership(dir: string): Promise<void> {
+        this.logger.log(`[Permissions] Fixing ownership and permissions on ${dir}...`);
+
+        // 1. Try chown (requires root or matching user)
         try {
-            this.logger.log(`[Ownership] Fixing permissions on ${dir}...`);
             await execAsync(`chown -R systego:psacln ${dir}`);
+            this.logger.log(`[Permissions] ✅ chown -R systego:psacln succeeded`);
         } catch (err: any) {
-            this.logger.warn(`[Ownership] chown failed (may need root): ${err.message}`);
-            // Non-fatal: might not have root permissions depending on deployment
+            this.logger.warn(`[Permissions] ⚠️ chown failed: ${err.message}`);
+            this.logger.warn(`[Permissions] Falling back to chmod to ensure web server can read files...`);
+        }
+
+        // 2. Always fix permissions (chmod) — this works even without root
+        //    Directories: 755 (web server needs execute to traverse)
+        //    Files: 644 (web server needs read access)
+        try {
+            await execAsync(`find ${dir} -type d -exec chmod 755 {} +`);
+            await execAsync(`find ${dir} -type f -exec chmod 644 {} +`);
+            this.logger.log(`[Permissions] ✅ chmod 755/644 applied successfully`);
+        } catch (err: any) {
+            this.logger.error(`[Permissions] ❌ chmod failed: ${err.message}`);
+            this.logger.error(`[Permissions] The web server may return 403 Forbidden. Fix manually: chmod -R 755 ${dir}`);
         }
     }
 
