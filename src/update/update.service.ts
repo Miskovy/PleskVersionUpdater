@@ -108,10 +108,13 @@ export class UpdateService {
 
         this.logger.log(`[Frontend Sync] Comparing ${paths.baseFrontend} → ${paths.clientFrontend}`);
 
-        const diff = await this.fileSyncService.compareDirectories(
+        const rawDiff = await this.fileSyncService.compareDirectories(
             paths.baseFrontend,
             paths.clientFrontend,
         );
+
+        // Filter out client logo files (logo-*.png in assets/) so the client's custom logo is preserved
+        const diff = this.filterLogoFiles(rawDiff);
 
         let sync: SyncResult | undefined;
 
@@ -122,6 +125,13 @@ export class UpdateService {
                 paths.clientFrontend,
                 diff,
             );
+
+            // Rebuild: inject the client-specific API URL into the compiled React bundles
+            // Replaces https://bcknd.systego.net → https://api-{clientName}.systego.net
+            // (mirrors injectApiUrlIntoBundle from ClientProvisioner.ts)
+            const clientApiUrl = `https://api-${clientName}.systego.net`;
+            this.logger.log(`[Frontend Rebuild] Injecting API URL: ${clientApiUrl}`);
+            await this.injectApiUrlIntoBundle(paths.clientFrontend, clientApiUrl);
 
             // Fix file ownership after copying
             await this.fixOwnership(paths.clientFrontend);
@@ -333,5 +343,89 @@ export class UpdateService {
         }
 
         this.logger.log('[Redeploy] Triggered Node.js restart (tmp/restart.txt)');
+    }
+
+    /**
+     * Filter out client logo files from the diff report.
+     * Logo files match the pattern "logo-*.png" inside the assets/ directory.
+     * This ensures each client keeps their custom uploaded logo.
+     */
+    private filterLogoFiles(diff: FileDiffReport): FileDiffReport {
+        const isLogoFile = (filePath: string): boolean => {
+            const normalized = filePath.replace(/\\/g, '/');
+            const basename = normalized.split('/').pop() || '';
+            return (
+                normalized.includes('assets/') &&
+                basename.startsWith('logo-') &&
+                basename.endsWith('.png')
+            );
+        };
+
+        const filteredAdded = diff.added.filter((f) => !isLogoFile(f));
+        const filteredModified = diff.modified.filter((f) => !isLogoFile(f));
+
+        const logoSkipped = (diff.added.length - filteredAdded.length) + (diff.modified.length - filteredModified.length);
+        if (logoSkipped > 0) {
+            this.logger.log(`[Frontend Sync] Preserved ${logoSkipped} client logo file(s) — skipped from sync.`);
+        }
+
+        return {
+            added: filteredAdded,
+            modified: filteredModified,
+            unchanged: diff.unchanged,
+            deleted: diff.deleted,
+        };
+    }
+
+    /**
+     * Recursively scans a directory and replaces the old base API URL with the
+     * client-specific API URL inside compiled JS, HTML, and JSON files.
+     * Mirrors injectApiUrlIntoBundle from ClientProvisioner.ts.
+     */
+    private async injectApiUrlIntoBundle(dirPath: string, newApiUrl: string): Promise<void> {
+        const oldUrlBase = 'https://bcknd.systego.net';
+        const escapedOld = oldUrlBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escapedOld, 'g');
+
+        await this.scanAndReplace(dirPath, regex, newApiUrl);
+        this.logger.log(`[Frontend Rebuild] Finished injecting ${newApiUrl} into compiled React bundles.`);
+    }
+
+    /**
+     * Recursive helper for injectApiUrlIntoBundle.
+     * Walks the directory tree and replaces URL occurrences in .js, .html, .json files.
+     */
+    private async scanAndReplace(currentDir: string, regex: RegExp, newUrl: string): Promise<void> {
+        let names: string[];
+        try {
+            names = await fs.readdir(currentDir);
+        } catch {
+            return;
+        }
+
+        for (const name of names) {
+            const fullPath = path.join(currentDir, name);
+            const stat = await fs.stat(fullPath);
+
+            if (stat.isDirectory()) {
+                await this.scanAndReplace(fullPath, regex, newUrl);
+            } else if (
+                stat.isFile() &&
+                (name.endsWith('.js') || name.endsWith('.html') || name.endsWith('.json'))
+            ) {
+                try {
+                    let content = await fs.readFile(fullPath, 'utf8');
+                    if (regex.test(content)) {
+                        // Reset regex lastIndex since it's global
+                        regex.lastIndex = 0;
+                        content = content.replace(regex, newUrl);
+                        await fs.writeFile(fullPath, content, 'utf8');
+                        this.logger.log(`[Frontend Rebuild] Injected API URL into: ${name}`);
+                    }
+                } catch (err: any) {
+                    this.logger.warn(`[Frontend Rebuild] Skipping ${name}: ${err.message}`);
+                }
+            }
+        }
     }
 }
