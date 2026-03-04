@@ -6,6 +6,7 @@ import {
     FileDiffReport,
     SyncResult,
     UpdateResult,
+    MasterRefreshResult,
 } from '../common/interfaces/sync-result.interface';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -92,6 +93,158 @@ export class UpdateService {
             frontend: frontendResult.frontend,
             backend: backendResult.backend,
         };
+    }
+
+    // ============================================================================
+    // Master Builds Refresh — sync live Systego → master-builds
+    // ============================================================================
+
+    /**
+     * Check for changes between live Systego deployments and master-builds (dry run).
+     */
+    async checkMasterChanges(): Promise<MasterRefreshResult> {
+        const liveFrontend = this.configService.get<string>('app.liveFrontendDir')!;
+        const liveBackend = this.configService.get<string>('app.liveBackendDir')!;
+        const masterFrontend = this.configService.get<string>('app.baseFrontendDir')!;
+        const masterBackend = this.configService.get<string>('app.baseBackendDir')!;
+
+        await this.subdomainService.validatePathsExist(liveFrontend, liveBackend, masterFrontend, masterBackend);
+
+        // Frontend: compare everything, exclude node_modules, tmp, uploads
+        const frontendExcludes = ['node_modules', 'tmp', 'uploads', '.git', '.env'];
+        const frontendDiff = await this.fileSyncService.compareDirectories(
+            liveFrontend,
+            masterFrontend,
+            frontendExcludes,
+        );
+
+        // Backend: compare only dist/, package.json, package-lock.json
+        const backendDistDiff = await this.fileSyncService.compareDirectories(
+            path.join(liveBackend, 'dist'),
+            path.join(masterBackend, 'dist'),
+        );
+        const backendRootDiff = await this.fileSyncService.compareSpecificFiles(
+            liveBackend,
+            masterBackend,
+            ['package.json', 'package-lock.json'],
+        );
+        const backendDiff = this.mergeBackendDiffs(backendDistDiff, backendRootDiff);
+
+        return {
+            dryRun: true,
+            frontend: { diff: frontendDiff },
+            backend: { diff: backendDiff },
+        };
+    }
+
+    /**
+     * Refresh master-builds from live Systego deployments (frontend + backend).
+     * - Frontend: systego.net/httpdocs → master-builds/frontend-latest (all except node_modules, tmp, uploads)
+     * - Backend: bcknd.systego.net → master-builds/backend-latest (dist/, package.json, package-lock.json)
+     */
+    async refreshMaster(): Promise<MasterRefreshResult> {
+        const frontendResult = await this.refreshMasterFrontend();
+        const backendResult = await this.refreshMasterBackend();
+
+        return {
+            dryRun: false,
+            frontend: frontendResult.frontend,
+            backend: backendResult.backend,
+        };
+    }
+
+    /**
+     * Refresh master-builds frontend from live systego.net.
+     * Copies everything except node_modules, tmp, uploads.
+     */
+    async refreshMasterFrontend(): Promise<MasterRefreshResult> {
+        const liveFrontend = this.configService.get<string>('app.liveFrontendDir')!;
+        const masterFrontend = this.configService.get<string>('app.baseFrontendDir')!;
+
+        await this.subdomainService.validatePathsExist(liveFrontend, masterFrontend);
+
+        const frontendExcludes = ['node_modules', 'tmp', 'uploads', '.git', '.env'];
+
+        this.logger.log(`[Master Refresh] Frontend: ${liveFrontend} → ${masterFrontend}`);
+        const diff = await this.fileSyncService.compareDirectories(liveFrontend, masterFrontend, frontendExcludes);
+
+        let sync: SyncResult | undefined;
+        if (diff.added.length > 0 || diff.modified.length > 0) {
+            this.logger.log(`[Master Refresh] Copying ${diff.added.length + diff.modified.length} frontend files...`);
+            sync = await this.fileSyncService.syncChanges(liveFrontend, masterFrontend, diff);
+        } else {
+            this.logger.log('[Master Refresh] Frontend: no changes detected.');
+        }
+
+        return { dryRun: false, frontend: { diff, sync } };
+    }
+
+    /**
+     * Refresh master-builds backend from live bcknd.systego.net.
+     * Copies only dist/, package.json, package-lock.json.
+     */
+    async refreshMasterBackend(): Promise<MasterRefreshResult> {
+        const liveBackend = this.configService.get<string>('app.liveBackendDir')!;
+        const masterBackend = this.configService.get<string>('app.baseBackendDir')!;
+
+        await this.subdomainService.validatePathsExist(liveBackend, masterBackend);
+
+        this.logger.log(`[Master Refresh] Backend: ${liveBackend} → ${masterBackend}`);
+
+        // Compare dist/ directory
+        const distDiff = await this.fileSyncService.compareDirectories(
+            path.join(liveBackend, 'dist'),
+            path.join(masterBackend, 'dist'),
+        );
+
+        // Compare root files
+        const rootDiff = await this.fileSyncService.compareSpecificFiles(
+            liveBackend,
+            masterBackend,
+            ['package.json', 'package-lock.json'],
+        );
+
+        const mergedDiff = this.mergeBackendDiffs(distDiff, rootDiff);
+
+        let sync: SyncResult | undefined;
+        const hasDistChanges = distDiff.added.length > 0 || distDiff.modified.length > 0;
+        const hasRootChanges = rootDiff.added.length > 0 || rootDiff.modified.length > 0;
+
+        if (hasDistChanges || hasRootChanges) {
+            const startedAt = new Date();
+            const copiedFiles: string[] = [];
+            const errors: Array<{ file: string; error: string }> = [];
+
+            if (hasDistChanges) {
+                this.logger.log(`[Master Refresh] Copying ${distDiff.added.length + distDiff.modified.length} dist files...`);
+                const distSync = await this.fileSyncService.syncChanges(
+                    path.join(liveBackend, 'dist'),
+                    path.join(masterBackend, 'dist'),
+                    distDiff,
+                );
+                copiedFiles.push(...distSync.copiedFiles.map((f) => `dist/${f}`));
+                errors.push(...distSync.errors);
+            }
+
+            if (hasRootChanges) {
+                this.logger.log('[Master Refresh] Copying package files...');
+                const rootSync = await this.fileSyncService.syncChanges(liveBackend, masterBackend, rootDiff);
+                copiedFiles.push(...rootSync.copiedFiles);
+                errors.push(...rootSync.errors);
+            }
+
+            sync = {
+                success: errors.length === 0,
+                copiedFiles,
+                errors,
+                startedAt,
+                completedAt: new Date(),
+            };
+        } else {
+            this.logger.log('[Master Refresh] Backend: no changes detected.');
+        }
+
+        return { dryRun: false, backend: { diff: mergedDiff, sync } };
     }
 
     /**

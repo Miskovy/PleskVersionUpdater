@@ -8,7 +8,10 @@ import { HealthResponseDto } from '../update/dto/update-response.dto';
 export class HealthController {
     @Public()
     @Get()
-    @ApiOperation({ summary: 'Health check', description: 'Public endpoint — no API key required. Returns service status, version, and timestamp.' })
+    @ApiOperation({
+        summary: 'Health check',
+        description: 'Returns the service status. This endpoint is public and does not require an API key.',
+    })
     @ApiOkResponse({ description: 'Service is healthy', type: HealthResponseDto })
     check() {
         return {

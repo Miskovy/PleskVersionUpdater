@@ -82,3 +82,23 @@ export class HealthResponseDto {
     @ApiProperty({ example: '2026-03-04T19:00:00.000Z' })
     timestamp: string;
 }
+
+export class MasterRefreshDataDto {
+    @ApiProperty({ description: 'Whether this was a dry-run', example: false })
+    dryRun: boolean;
+
+    @ApiPropertyOptional({ description: 'Frontend sync details', type: SyncSectionDto })
+    frontend?: SyncSectionDto;
+
+    @ApiPropertyOptional({ description: 'Backend sync details', type: SyncSectionDto })
+    backend?: SyncSectionDto;
+}
+
+export class MasterRefreshResultDto {
+    @ApiProperty({ description: 'Whether the operation was successful', example: true })
+    success: boolean;
+
+    @ApiProperty({ description: 'Master refresh result data', type: MasterRefreshDataDto })
+    data: MasterRefreshDataDto;
+}
+

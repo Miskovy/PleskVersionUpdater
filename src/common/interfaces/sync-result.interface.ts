@@ -48,3 +48,18 @@ export interface UpdateResult {
         sync?: SyncResult;
     };
 }
+
+/**
+ * Result of a master-builds refresh operation (live Systego → master-builds).
+ */
+export interface MasterRefreshResult {
+    dryRun: boolean;
+    frontend?: {
+        diff: FileDiffReport;
+        sync?: SyncResult;
+    };
+    backend?: {
+        diff: FileDiffReport;
+        sync?: SyncResult;
+    };
+}
