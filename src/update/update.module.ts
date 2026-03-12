@@ -8,5 +8,6 @@ import { FileSyncModule } from '../file-sync/file-sync.module';
     imports: [SubdomainModule, FileSyncModule],
     controllers: [UpdateController],
     providers: [UpdateService],
+    exports: [UpdateService],
 })
 export class UpdateModule { }
