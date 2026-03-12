@@ -11,4 +11,8 @@ export default registerAs('app', () => ({
     excludedPaths: (process.env.EXCLUDED_PATHS || 'node_modules,.env,.git,.htaccess,uploads,tmp,logs,startup-error.log,app.js,.vite,dist_cache')
         .split(',')
         .map((p) => p.trim()),
+    // Scheduler config
+    autoSyncEnabled: process.env.AUTO_SYNC_ENABLED === 'true',
+    autoSyncIntervalMinutes: parseInt(process.env.AUTO_SYNC_INTERVAL_MINUTES || '5', 10),
+    autoSyncClients: process.env.AUTO_SYNC_CLIENTS === 'true',
 }));

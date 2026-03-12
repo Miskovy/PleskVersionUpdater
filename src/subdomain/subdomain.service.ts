@@ -90,4 +90,41 @@ export class SubdomainService {
             }
         }
     }
+
+    /**
+     * Discovers all provisioned client names by scanning the vhosts directory.
+     * Looks for api-{clientName} directories and extracts the client name.
+     * Ignores system directories like 'bcknd', 'default', etc.
+     */
+    async listClientNames(): Promise<string[]> {
+        const systemDirs = ['bcknd', 'default', 'httpdocs', 'webmail', 'cgi-bin', 'error_docs'];
+
+        try {
+            const entries = await fs.readdir(this.vhostsDir);
+            const clients: string[] = [];
+
+            for (const name of entries) {
+                // Look for api-{client} directories to identify clients
+                if (name.startsWith('api-')) {
+                    const clientName = name.substring(4); // remove "api-" prefix
+                    if (!systemDirs.includes(clientName)) {
+                        // Verify the frontend directory also exists
+                        const frontendDir = path.join(this.vhostsDir, clientName);
+                        try {
+                            await fs.access(frontendDir);
+                            clients.push(clientName);
+                        } catch {
+                            // api-{name} exists but {name} doesn't — skip
+                        }
+                    }
+                }
+            }
+
+            this.logger.log(`Discovered ${clients.length} client(s): ${clients.join(', ') || 'none'}`);
+            return clients;
+        } catch (err: any) {
+            this.logger.error(`Failed to list clients: ${err.message}`);
+            return [];
+        }
+    }
 }
