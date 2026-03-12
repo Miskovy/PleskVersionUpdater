@@ -553,53 +553,53 @@ export class UpdateService {
 
     /**
      * Recursively scans a directory and replaces the old base API URL with the
-     * client-specific API URL inside compiled JS, HTML, and JSON files.
+     * client-specific API URL inside compiled JS, HTML, JSON, and .env files.
      * Mirrors injectApiUrlIntoBundle from ClientProvisioner.ts.
      */
     private async injectApiUrlIntoBundle(dirPath: string, newApiUrl: string): Promise<void> {
         const oldUrlBase = 'https://bcknd.systego.net';
-        const escapedOld = oldUrlBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(escapedOld, 'g');
 
-        await this.scanAndReplace(dirPath, regex, newApiUrl);
-        this.logger.log(`[Frontend Rebuild] Finished injecting ${newApiUrl} into compiled React bundles.`);
-    }
+        // Some React apps might use /api appended, some might not.
+        // It's safest to just replace the base domain globally.
+        // NOTE: The POS project uses "Bcknd" (capital B), so we must match case-insensitively.
 
-    /**
-     * Recursive helper for injectApiUrlIntoBundle.
-     * Walks the directory tree and replaces URL occurrences in .js, .html, .json files.
-     */
-    private async scanAndReplace(currentDir: string, regex: RegExp, newUrl: string): Promise<void> {
-        let names: string[];
-        try {
-            names = await fs.readdir(currentDir);
-        } catch {
-            return;
-        }
+        const scanAndReplace = async (currentDir: string) => {
+            let entries: any[];
+            try {
+                entries = await fs.readdir(currentDir, { withFileTypes: true });
+            } catch {
+                return;
+            }
 
-        for (const name of names) {
-            const fullPath = path.join(currentDir, name);
-            const stat = await fs.stat(fullPath);
+            for (const entry of entries) {
+                const fullPath = path.join(currentDir, entry.name);
 
-            if (stat.isDirectory()) {
-                await this.scanAndReplace(fullPath, regex, newUrl);
-            } else if (
-                stat.isFile() &&
-                (name.endsWith('.js') || name.endsWith('.html') || name.endsWith('.json'))
-            ) {
-                try {
-                    let content = await fs.readFile(fullPath, 'utf8');
-                    if (regex.test(content)) {
-                        // Reset regex lastIndex since it's global
-                        regex.lastIndex = 0;
-                        content = content.replace(regex, newUrl);
-                        await fs.writeFile(fullPath, content, 'utf8');
-                        this.logger.log(`[Frontend Rebuild] Injected API URL into: ${name}`);
+                if (entry.isDirectory()) {
+                    await scanAndReplace(fullPath);
+                } else if (
+                    entry.isFile() &&
+                    (entry.name.endsWith('.js') || entry.name.endsWith('.html') || entry.name.endsWith('.json') || entry.name === '.env')
+                ) {
+                    try {
+                        let content = await fs.readFile(fullPath, 'utf8');
+
+                        // Case-insensitive check to catch both "bcknd" and "Bcknd"
+                        if (content.toLowerCase().includes(oldUrlBase.toLowerCase())) {
+                            // Replace all occurrences globally, case-insensitive
+                            const regex = new RegExp(oldUrlBase.replace(/[.*/+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+                            content = content.replace(regex, newApiUrl);
+
+                            await fs.writeFile(fullPath, content, 'utf8');
+                            this.logger.log(`[Frontend Rebuild] Injected API URL into: ${entry.name}`);
+                        }
+                    } catch (err: any) {
+                        this.logger.warn(`[Frontend Rebuild] Skipping ${entry.name} during injection: ${err.message}`);
                     }
-                } catch (err: any) {
-                    this.logger.warn(`[Frontend Rebuild] Skipping ${name}: ${err.message}`);
                 }
             }
-        }
+        };
+
+        await scanAndReplace(dirPath);
+        this.logger.log(`[Frontend Rebuild] Finished injecting ${newApiUrl} into compiled React bundles.`);
     }
 }
