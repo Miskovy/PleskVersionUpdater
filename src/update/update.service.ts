@@ -54,12 +54,10 @@ export class UpdateService {
             path.join(paths.clientBackend, 'dist'),
         );
 
-        // التعديل هنا: فحص التغييرات في مجلد المايجريشن الخاص بـ Drizzle
-        // لو المجلد عندك اسمه مختلف (مثلاً src/db/migrations)، عدل المسار هنا
         const backendDrizzleDiff = await this.fileSyncService.compareDirectories(
             path.join(paths.baseBackend, 'drizzle'),
             path.join(paths.clientBackend, 'drizzle'),
-        ).catch(() => ({ added: [], modified: [], deleted: [], unchanged: 0 })); // Catch in case folder doesn't exist yet
+        ).catch(() => ({ added: [], modified: [], deleted: [], unchanged: 0 })); 
 
         const backendRootDiff = await this.fileSyncService.compareSpecificFiles(
             paths.baseBackend,
@@ -67,7 +65,6 @@ export class UpdateService {
             ['package.json', 'package-lock.json'],
         );
 
-        // دمج كل التغييرات
         const backendDiff = this.mergeBackendDiffs(backendDistDiff, backendDrizzleDiff, backendRootDiff);
 
         return {
@@ -279,6 +276,11 @@ export class UpdateService {
             await this.injectApiUrlIntoBundle(paths.clientFrontend, clientApiUrl);
 
             await this.fixOwnership(paths.clientFrontend);
+            
+            // 🔥 التعديل هنا: إجبار سيرفر الفرونت إند (Next.js) إنه يعمل ريستارت عشان يقرأ التعديلات
+            this.logger.log(`[Frontend Rebuild] Triggering Next.js server restart for ${clientName}...`);
+            await this.triggerNodeRestart(paths.clientFrontend);
+
         } else {
             this.logger.log('[Frontend Sync] No changes detected, skipping.');
         }
@@ -444,17 +446,13 @@ export class UpdateService {
                 if (stderr) this.logger.warn(`[Redeploy] npm stderr: ${stderr.trim()}`);
             }
 
-            // التعديل هنا: تشغيل Drizzle MySQL Migrations
-            // تأكد إن عندك سكريبت في الـ package.json اسمه "db:migrate" أو عدل الأمر ده للأمر اللي بتستخدمه
             if (dbChanged || packageChanged) {
                  this.logger.log('[Redeploy] Running Drizzle MySQL Migrations...');
                  try {
-                     // يمكنك استبدال "npm run db:migrate" بالأمر الفعلي الذي تستخدمه لتشغيل المايجريشن في السيرفر
-                   const { stdout } = await execAsync('npm run migrate-db', { cwd: backendDir });
+                   const { stdout } = await execAsync('npx --yes drizzle-kit push', { cwd: backendDir });
                      this.logger.log(`[Redeploy] Drizzle Migration success: ${stdout.trim()}`);
                  } catch (err: any) {
                      this.logger.error(`[Redeploy] ❌ Drizzle Migration failed: ${err.message}`);
-                     // لا نقوم بعمل throw هنا حتى لا يتوقف باقي التحديث، ولكن يجب مراجعة السجلات
                  }
             }
 
@@ -490,7 +488,6 @@ export class UpdateService {
     private async triggerNodeRestart(destDir: string): Promise<void> {
         const tmpDir = path.join(destDir, 'tmp');
         
-        // التعديل هنا: التأكد من إعطاء مجلد tmp صلاحيات كاملة عشان Plesk يقدر يقرأ ملف الـ restart
         await fs.mkdir(tmpDir, { recursive: true }).catch(() => { });
         try {
             await execAsync(`chmod 777 ${tmpDir}`);
@@ -507,7 +504,6 @@ export class UpdateService {
             await fs.writeFile(restartFile, 'restart time: ' + time.toISOString());
         }
 
-        // إعطاء صلاحيات للملف نفسه لضمان قراءته بواسطة Passenger
         try {
             await execAsync(`chmod 666 ${restartFile}`);
         } catch (e) {}
