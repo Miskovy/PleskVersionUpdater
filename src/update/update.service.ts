@@ -33,10 +33,6 @@ export class UpdateService {
     // Public API
     // ============================================================================
 
-    /**
-     * Check for changes between base and client directories (dry run).
-     * Returns diff reports without copying anything.
-     */
     async checkForChanges(clientName: string): Promise<UpdateResult> {
         this.subdomainService.validateClientName(clientName);
 
@@ -48,27 +44,31 @@ export class UpdateService {
             paths.clientBackend,
         );
 
-        // Compare frontend (full directory)
         const frontendDiff = await this.fileSyncService.compareDirectories(
             paths.baseFrontend,
             paths.clientFrontend,
         );
 
-        // Compare backend dist folder
         const backendDistDiff = await this.fileSyncService.compareDirectories(
             path.join(paths.baseBackend, 'dist'),
             path.join(paths.clientBackend, 'dist'),
         );
 
-        // Compare backend root files (package.json, package-lock.json)
+        // التعديل هنا: فحص التغييرات في مجلد المايجريشن الخاص بـ Drizzle
+        // لو المجلد عندك اسمه مختلف (مثلاً src/db/migrations)، عدل المسار هنا
+        const backendDrizzleDiff = await this.fileSyncService.compareDirectories(
+            path.join(paths.baseBackend, 'drizzle'),
+            path.join(paths.clientBackend, 'drizzle'),
+        ).catch(() => ({ added: [], modified: [], deleted: [], unchanged: 0 })); // Catch in case folder doesn't exist yet
+
         const backendRootDiff = await this.fileSyncService.compareSpecificFiles(
             paths.baseBackend,
             paths.clientBackend,
             ['package.json', 'package-lock.json'],
         );
 
-        // Merge backend diffs
-        const backendDiff = this.mergeBackendDiffs(backendDistDiff, backendRootDiff);
+        // دمج كل التغييرات
+        const backendDiff = this.mergeBackendDiffs(backendDistDiff, backendDrizzleDiff, backendRootDiff);
 
         return {
             clientName,
@@ -78,9 +78,6 @@ export class UpdateService {
         };
     }
 
-    /**
-     * Sync all changes (frontend + backend) from base to client.
-     */
     async syncAll(clientName: string): Promise<UpdateResult> {
         this.subdomainService.validateClientName(clientName);
 
@@ -96,12 +93,9 @@ export class UpdateService {
     }
 
     // ============================================================================
-    // Master Builds Refresh — sync live Systego → master-builds
+    // Master Builds Refresh
     // ============================================================================
 
-    /**
-     * Check for changes between live Systego deployments and master-builds (dry run).
-     */
     async checkMasterChanges(): Promise<MasterRefreshResult> {
         const liveFrontend = this.configService.get<string>('app.liveFrontendDir')!;
         const liveBackend = this.configService.get<string>('app.liveBackendDir')!;
@@ -110,7 +104,6 @@ export class UpdateService {
 
         await this.subdomainService.validatePathsExist(liveFrontend, liveBackend, masterFrontend, masterBackend);
 
-        // Frontend: compare everything, exclude node_modules, tmp, uploads
         const frontendExcludes = ['node_modules', 'tmp', 'uploads', '.git', '.env'];
         const frontendDiff = await this.fileSyncService.compareDirectories(
             liveFrontend,
@@ -118,17 +111,23 @@ export class UpdateService {
             frontendExcludes,
         );
 
-        // Backend: compare only dist/, package.json, package-lock.json
         const backendDistDiff = await this.fileSyncService.compareDirectories(
             path.join(liveBackend, 'dist'),
             path.join(masterBackend, 'dist'),
         );
+
+        const backendDrizzleDiff = await this.fileSyncService.compareDirectories(
+            path.join(liveBackend, 'drizzle'),
+            path.join(masterBackend, 'drizzle'),
+        ).catch(() => ({ added: [], modified: [], deleted: [], unchanged: 0 }));
+
         const backendRootDiff = await this.fileSyncService.compareSpecificFiles(
             liveBackend,
             masterBackend,
             ['package.json', 'package-lock.json'],
         );
-        const backendDiff = this.mergeBackendDiffs(backendDistDiff, backendRootDiff);
+
+        const backendDiff = this.mergeBackendDiffs(backendDistDiff, backendDrizzleDiff, backendRootDiff);
 
         return {
             dryRun: true,
@@ -137,11 +136,6 @@ export class UpdateService {
         };
     }
 
-    /**
-     * Refresh master-builds from live Systego deployments (frontend + backend).
-     * - Frontend: systego.net/httpdocs → master-builds/frontend-latest (all except node_modules, tmp, uploads)
-     * - Backend: bcknd.systego.net → master-builds/backend-latest (dist/, package.json, package-lock.json)
-     */
     async refreshMaster(): Promise<MasterRefreshResult> {
         const frontendResult = await this.refreshMasterFrontend();
         const backendResult = await this.refreshMasterBackend();
@@ -153,10 +147,6 @@ export class UpdateService {
         };
     }
 
-    /**
-     * Refresh master-builds frontend from live systego.net.
-     * Copies everything except node_modules, tmp, uploads.
-     */
     async refreshMasterFrontend(): Promise<MasterRefreshResult> {
         const liveFrontend = this.configService.get<string>('app.liveFrontendDir')!;
         const masterFrontend = this.configService.get<string>('app.baseFrontendDir')!;
@@ -179,10 +169,6 @@ export class UpdateService {
         return { dryRun: false, frontend: { diff, sync } };
     }
 
-    /**
-     * Refresh master-builds backend from live bcknd.systego.net.
-     * Copies only dist/, package.json, package-lock.json.
-     */
     async refreshMasterBackend(): Promise<MasterRefreshResult> {
         const liveBackend = this.configService.get<string>('app.liveBackendDir')!;
         const masterBackend = this.configService.get<string>('app.baseBackendDir')!;
@@ -191,32 +177,34 @@ export class UpdateService {
 
         this.logger.log(`[Master Refresh] Backend: ${liveBackend} → ${masterBackend}`);
 
-        // Compare dist/ directory
         const distDiff = await this.fileSyncService.compareDirectories(
             path.join(liveBackend, 'dist'),
             path.join(masterBackend, 'dist'),
         );
 
-        // Compare root files
+        const drizzleDiff = await this.fileSyncService.compareDirectories(
+            path.join(liveBackend, 'drizzle'),
+            path.join(masterBackend, 'drizzle'),
+        ).catch(() => ({ added: [], modified: [], deleted: [], unchanged: 0 }));
+
         const rootDiff = await this.fileSyncService.compareSpecificFiles(
             liveBackend,
             masterBackend,
             ['package.json', 'package-lock.json'],
         );
 
-        const mergedDiff = this.mergeBackendDiffs(distDiff, rootDiff);
+        const mergedDiff = this.mergeBackendDiffs(distDiff, drizzleDiff, rootDiff);
 
         let sync: SyncResult | undefined;
-        const hasDistChanges = distDiff.added.length > 0 || distDiff.modified.length > 0;
-        const hasRootChanges = rootDiff.added.length > 0 || rootDiff.modified.length > 0;
+        const hasChanges = mergedDiff.added.length > 0 || mergedDiff.modified.length > 0;
 
-        if (hasDistChanges || hasRootChanges) {
+        if (hasChanges) {
             const startedAt = new Date();
             const copiedFiles: string[] = [];
             const errors: Array<{ file: string; error: string }> = [];
 
-            if (hasDistChanges) {
-                this.logger.log(`[Master Refresh] Copying ${distDiff.added.length + distDiff.modified.length} dist files...`);
+            if (distDiff.added.length > 0 || distDiff.modified.length > 0) {
+                this.logger.log(`[Master Refresh] Copying dist files...`);
                 const distSync = await this.fileSyncService.syncChanges(
                     path.join(liveBackend, 'dist'),
                     path.join(masterBackend, 'dist'),
@@ -226,7 +214,18 @@ export class UpdateService {
                 errors.push(...distSync.errors);
             }
 
-            if (hasRootChanges) {
+            if (drizzleDiff.added.length > 0 || drizzleDiff.modified.length > 0) {
+                this.logger.log(`[Master Refresh] Copying Drizzle migrations...`);
+                const drizzleSync = await this.fileSyncService.syncChanges(
+                    path.join(liveBackend, 'drizzle'),
+                    path.join(masterBackend, 'drizzle'),
+                    drizzleDiff,
+                );
+                copiedFiles.push(...drizzleSync.copiedFiles.map((f) => `drizzle/${f}`));
+                errors.push(...drizzleSync.errors);
+            }
+
+            if (rootDiff.added.length > 0 || rootDiff.modified.length > 0) {
                 this.logger.log('[Master Refresh] Copying package files...');
                 const rootSync = await this.fileSyncService.syncChanges(liveBackend, masterBackend, rootDiff);
                 copiedFiles.push(...rootSync.copiedFiles);
@@ -247,9 +246,6 @@ export class UpdateService {
         return { dryRun: false, backend: { diff: mergedDiff, sync } };
     }
 
-    /**
-     * Sync only frontend changes from systego.net to {client}.systego.net.
-     */
     async syncFrontend(clientName: string): Promise<UpdateResult> {
         this.subdomainService.validateClientName(clientName);
 
@@ -266,7 +262,6 @@ export class UpdateService {
             paths.clientFrontend,
         );
 
-        // Filter out client logo files (logo-*.png in assets/) so the client's custom logo is preserved
         const diff = this.filterLogoFiles(rawDiff);
 
         let sync: SyncResult | undefined;
@@ -279,14 +274,10 @@ export class UpdateService {
                 diff,
             );
 
-            // Rebuild: inject the client-specific API URL into the compiled React bundles
-            // Replaces https://bcknd.systego.net → https://api-{clientName}.systego.net
-            // (mirrors injectApiUrlIntoBundle from ClientProvisioner.ts)
             const clientApiUrl = `https://api-${clientName}.systego.net`;
             this.logger.log(`[Frontend Rebuild] Injecting API URL: ${clientApiUrl}`);
             await this.injectApiUrlIntoBundle(paths.clientFrontend, clientApiUrl);
 
-            // Fix file ownership after copying
             await this.fixOwnership(paths.clientFrontend);
         } else {
             this.logger.log('[Frontend Sync] No changes detected, skipping.');
@@ -299,11 +290,6 @@ export class UpdateService {
         };
     }
 
-    /**
-     * Sync only backend changes from bcknd.systego.net to api-{client}.systego.net.
-     * Syncs: dist/ folder + package.json + package-lock.json
-     * Then redeploys using the same pattern as ClientProvisioner.ts.
-     */
     async syncBackend(clientName: string): Promise<UpdateResult> {
         this.subdomainService.validateClientName(clientName);
 
@@ -315,33 +301,35 @@ export class UpdateService {
 
         this.logger.log(`[Backend Sync] Comparing ${paths.baseBackend} → ${paths.clientBackend}`);
 
-        // Compare dist/ directory
         const distDiff = await this.fileSyncService.compareDirectories(
             path.join(paths.baseBackend, 'dist'),
             path.join(paths.clientBackend, 'dist'),
         );
 
-        // Compare root files
+        const drizzleDiff = await this.fileSyncService.compareDirectories(
+            path.join(paths.baseBackend, 'drizzle'),
+            path.join(paths.clientBackend, 'drizzle'),
+        ).catch(() => ({ added: [], modified: [], deleted: [], unchanged: 0 }));
+
         const rootDiff = await this.fileSyncService.compareSpecificFiles(
             paths.baseBackend,
             paths.clientBackend,
             ['package.json', 'package-lock.json'],
         );
 
-        const mergedDiff = this.mergeBackendDiffs(distDiff, rootDiff);
+        const mergedDiff = this.mergeBackendDiffs(distDiff, drizzleDiff, rootDiff);
 
         let sync: SyncResult | undefined;
-        const hasDistChanges = distDiff.added.length > 0 || distDiff.modified.length > 0;
-        const hasRootChanges = rootDiff.added.length > 0 || rootDiff.modified.length > 0;
+        const hasChanges = mergedDiff.added.length > 0 || mergedDiff.modified.length > 0;
 
-        if (hasDistChanges || hasRootChanges) {
+        if (hasChanges) {
             const startedAt = new Date();
             const copiedFiles: string[] = [];
             const errors: Array<{ file: string; error: string }> = [];
 
-            // 1. Sync dist/ folder changes
-            if (hasDistChanges) {
-                this.logger.log(`[Backend Sync] Copying ${distDiff.added.length + distDiff.modified.length} dist files...`);
+            // 1. Sync dist/
+            if (distDiff.added.length > 0 || distDiff.modified.length > 0) {
+                this.logger.log(`[Backend Sync] Copying dist files...`);
                 const distSync = await this.fileSyncService.syncChanges(
                     path.join(paths.baseBackend, 'dist'),
                     path.join(paths.clientBackend, 'dist'),
@@ -351,8 +339,20 @@ export class UpdateService {
                 errors.push(...distSync.errors);
             }
 
-            // 2. Sync root files (package.json, package-lock.json)
-            if (hasRootChanges) {
+            // 2. Sync drizzle/ migrations
+            if (drizzleDiff.added.length > 0 || drizzleDiff.modified.length > 0) {
+                this.logger.log(`[Backend Sync] Copying Drizzle migration files...`);
+                const drizzleSync = await this.fileSyncService.syncChanges(
+                    path.join(paths.baseBackend, 'drizzle'),
+                    path.join(paths.clientBackend, 'drizzle'),
+                    drizzleDiff,
+                );
+                copiedFiles.push(...drizzleSync.copiedFiles.map((f) => `drizzle/${f}`));
+                errors.push(...drizzleSync.errors);
+            }
+
+            // 3. Sync root files
+            if (rootDiff.added.length > 0 || rootDiff.modified.length > 0) {
                 this.logger.log('[Backend Sync] Copying package files...');
                 const rootSync = await this.fileSyncService.syncChanges(
                     paths.baseBackend,
@@ -363,8 +363,11 @@ export class UpdateService {
                 errors.push(...rootSync.errors);
             }
 
-            // 3. Redeploy backend (mirrors ClientProvisioner.ts pattern)
-            await this.redeployBackend(clientName, paths.clientBackend, hasRootChanges);
+            // 4. Redeploy & Run Migrations
+            const packageChanged = rootDiff.added.length > 0 || rootDiff.modified.length > 0;
+            const dbChanged = drizzleDiff.added.length > 0 || drizzleDiff.modified.length > 0;
+            
+            await this.redeployBackend(clientName, paths.clientBackend, packageChanged, dbChanged);
 
             sync = {
                 success: errors.length === 0,
@@ -388,9 +391,6 @@ export class UpdateService {
     // Private Helpers
     // ============================================================================
 
-    /**
-     * Resolve all filesystem paths for a given client.
-     */
     private resolvePaths(clientName: string) {
         return {
             baseFrontend: this.subdomainService.getBaseFrontendPath(),
@@ -400,61 +400,65 @@ export class UpdateService {
         };
     }
 
-    /**
-     * Merge dist/ diffs and root file diffs into a single report.
-     * Prefixes dist files with "dist/" for clarity.
-     */
     private mergeBackendDiffs(
         distDiff: FileDiffReport,
+        drizzleDiff: FileDiffReport,
         rootDiff: FileDiffReport,
     ): FileDiffReport {
         return {
             added: [
                 ...distDiff.added.map((f) => `dist/${f}`),
+                ...drizzleDiff.added.map((f) => `drizzle/${f}`),
                 ...rootDiff.added,
             ],
             modified: [
                 ...distDiff.modified.map((f) => `dist/${f}`),
+                ...drizzleDiff.modified.map((f) => `drizzle/${f}`),
                 ...rootDiff.modified,
             ],
-            unchanged: distDiff.unchanged + rootDiff.unchanged,
+            unchanged: distDiff.unchanged + drizzleDiff.unchanged + rootDiff.unchanged,
             deleted: [
                 ...distDiff.deleted.map((f) => `dist/${f}`),
+                ...drizzleDiff.deleted.map((f) => `drizzle/${f}`),
                 ...rootDiff.deleted,
             ],
         };
     }
 
-    /**
-     * Redeploy the backend after syncing files.
-     * Mirrors the deployment pattern from ClientProvisioner.ts:
-     *  - If package.json changed → npm install --production
-     *  - Fix file ownership (chown -R systego:psacln)
-     *  - Touch tmp/restart.txt to trigger Plesk Passenger restart
-     */
     private async redeployBackend(
         clientName: string,
         backendDir: string,
         packageChanged: boolean,
+        dbChanged: boolean,
     ): Promise<void> {
         this.logger.log(`[Redeploy] Starting redeployment for api-${clientName}...`);
 
         try {
-            // 1. If package files changed, reinstall production dependencies
             if (packageChanged) {
                 this.logger.log('[Redeploy] Package files changed — running npm install --production...');
                 const { stdout, stderr } = await execAsync('npm install --production', {
                     cwd: backendDir,
-                    timeout: 120000, // 2 minute timeout
+                    timeout: 120000,
                 });
                 if (stdout) this.logger.log(`[Redeploy] npm: ${stdout.trim()}`);
                 if (stderr) this.logger.warn(`[Redeploy] npm stderr: ${stderr.trim()}`);
             }
 
-            // 2. Fix file ownership for Plesk Passenger
-            await this.fixOwnership(backendDir);
+            // التعديل هنا: تشغيل Drizzle MySQL Migrations
+            // تأكد إن عندك سكريبت في الـ package.json اسمه "db:migrate" أو عدل الأمر ده للأمر اللي بتستخدمه
+            if (dbChanged || packageChanged) {
+                 this.logger.log('[Redeploy] Running Drizzle MySQL Migrations...');
+                 try {
+                     // يمكنك استبدال "npm run db:migrate" بالأمر الفعلي الذي تستخدمه لتشغيل المايجريشن في السيرفر
+                   const { stdout } = await execAsync('npm run migrate-db', { cwd: backendDir });
+                     this.logger.log(`[Redeploy] Drizzle Migration success: ${stdout.trim()}`);
+                 } catch (err: any) {
+                     this.logger.error(`[Redeploy] ❌ Drizzle Migration failed: ${err.message}`);
+                     // لا نقوم بعمل throw هنا حتى لا يتوقف باقي التحديث، ولكن يجب مراجعة السجلات
+                 }
+            }
 
-            // 3. Touch tmp/restart.txt to trigger Passenger restart
+            await this.fixOwnership(backendDir);
             await this.triggerNodeRestart(backendDir);
 
             this.logger.log(`[Redeploy] ✅ Redeployment complete for api-${clientName}`);
@@ -464,48 +468,35 @@ export class UpdateService {
         }
     }
 
-    /**
-     * Fix file ownership and permissions to match Plesk expectations.
-     * 
-     * Plesk Apache/Nginx requires:
-     *  - Ownership: systego:psacln (domain user + Plesk group)
-     *  - Directories: 755 (rwxr-xr-x)
-     *  - Files: 644 (rw-r--r--)
-     * 
-     * Without this, the web server returns 403 Forbidden.
-     */
     private async fixOwnership(dir: string): Promise<void> {
         this.logger.log(`[Permissions] Fixing ownership and permissions on ${dir}...`);
 
-        // 1. Try chown (requires root or matching user)
         try {
             await execAsync(`chown -R systego:psacln ${dir}`);
             this.logger.log(`[Permissions] ✅ chown -R systego:psacln succeeded`);
         } catch (err: any) {
             this.logger.warn(`[Permissions] ⚠️ chown failed: ${err.message}`);
-            this.logger.warn(`[Permissions] Falling back to chmod to ensure web server can read files...`);
         }
 
-        // 2. Always fix permissions (chmod) — this works even without root
-        //    Directories: 755 (web server needs execute to traverse)
-        //    Files: 644 (web server needs read access)
         try {
             await execAsync(`find ${dir} -type d -exec chmod 755 {} +`);
             await execAsync(`find ${dir} -type f -exec chmod 644 {} +`);
             this.logger.log(`[Permissions] ✅ chmod 755/644 applied successfully`);
         } catch (err: any) {
             this.logger.error(`[Permissions] ❌ chmod failed: ${err.message}`);
-            this.logger.error(`[Permissions] The web server may return 403 Forbidden. Fix manually: chmod -R 755 ${dir}`);
         }
     }
 
-    /**
-     * Touch tmp/restart.txt to restart the Plesk Passenger Node.js app.
-     * Mirrors triggerNodeRestart from ClientProvisioner.ts.
-     */
     private async triggerNodeRestart(destDir: string): Promise<void> {
         const tmpDir = path.join(destDir, 'tmp');
+        
+        // التعديل هنا: التأكد من إعطاء مجلد tmp صلاحيات كاملة عشان Plesk يقدر يقرأ ملف الـ restart
         await fs.mkdir(tmpDir, { recursive: true }).catch(() => { });
+        try {
+            await execAsync(`chmod 777 ${tmpDir}`);
+        } catch (e) {
+             this.logger.warn(`Could not set 777 on tmp dir: ${e}`);
+        }
 
         const restartFile = path.join(tmpDir, 'restart.txt');
         const time = new Date();
@@ -516,14 +507,14 @@ export class UpdateService {
             await fs.writeFile(restartFile, 'restart time: ' + time.toISOString());
         }
 
+        // إعطاء صلاحيات للملف نفسه لضمان قراءته بواسطة Passenger
+        try {
+            await execAsync(`chmod 666 ${restartFile}`);
+        } catch (e) {}
+
         this.logger.log('[Redeploy] Triggered Node.js restart (tmp/restart.txt)');
     }
 
-    /**
-     * Filter out client logo files from the diff report.
-     * Logo files match the pattern "logo-*.png" inside the assets/ directory.
-     * This ensures each client keeps their custom uploaded logo.
-     */
     private filterLogoFiles(diff: FileDiffReport): FileDiffReport {
         const isLogoFile = (filePath: string): boolean => {
             const normalized = filePath.replace(/\\/g, '/');
@@ -551,17 +542,8 @@ export class UpdateService {
         };
     }
 
-    /**
-     * Recursively scans a directory and replaces the old base API URL with the
-     * client-specific API URL inside compiled JS, HTML, JSON, and .env files.
-     * Mirrors injectApiUrlIntoBundle from ClientProvisioner.ts.
-     */
     private async injectApiUrlIntoBundle(dirPath: string, newApiUrl: string): Promise<void> {
         const oldUrlBase = 'https://bcknd.systego.net';
-
-        // Some React apps might use /api appended, some might not.
-        // It's safest to just replace the base domain globally.
-        // NOTE: The POS project uses "Bcknd" (capital B), so we must match case-insensitively.
 
         const scanAndReplace = async (currentDir: string) => {
             let entries: any[];
@@ -583,9 +565,7 @@ export class UpdateService {
                     try {
                         let content = await fs.readFile(fullPath, 'utf8');
 
-                        // Case-insensitive check to catch both "bcknd" and "Bcknd"
                         if (content.toLowerCase().includes(oldUrlBase.toLowerCase())) {
-                            // Replace all occurrences globally, case-insensitive
                             const regex = new RegExp(oldUrlBase.replace(/[.*/+?^${}()|[\]\\]/g, '\\$&'), 'gi');
                             content = content.replace(regex, newApiUrl);
 
