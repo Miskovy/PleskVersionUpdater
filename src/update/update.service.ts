@@ -427,44 +427,41 @@ export class UpdateService {
         };
     }
 
-    private async redeployBackend(
-        clientName: string,
-        backendDir: string,
-        packageChanged: boolean,
-        dbChanged: boolean,
-    ): Promise<void> {
-        this.logger.log(`[Redeploy] Starting redeployment for api-${clientName}...`);
+  private async redeployBackend(
+    clientName: string,
+    backendDir: string,
+    packageChanged: boolean,
+    dbChanged: boolean,
+): Promise<void> {
+    this.logger.log(`[Redeploy] Starting redeployment for api-${clientName}...`);
 
-        try {
-            if (packageChanged) {
-                this.logger.log('[Redeploy] Package files changed — running npm install --production...');
-                const { stdout, stderr } = await execAsync('npm install --production', {
-                    cwd: backendDir,
-                    timeout: 120000,
-                });
-                if (stdout) this.logger.log(`[Redeploy] npm: ${stdout.trim()}`);
-                if (stderr) this.logger.warn(`[Redeploy] npm stderr: ${stderr.trim()}`);
-            }
+    try {
+        // 1️⃣ لو package.json اتغير
+        if (packageChanged) {
+            this.logger.log('[Redeploy] Package files changed — running npm install --production...');
+            const { stdout, stderr } = await execAsync('npm install --production', {
+                cwd: backendDir,
+                timeout: 120000,
+            });
 
-            if (dbChanged || packageChanged) {
-                 this.logger.log('[Redeploy] Running Drizzle MySQL Migrations...');
-                 try {
-                   const { stdout } = await execAsync('npx --yes drizzle-kit push', { cwd: backendDir });
-                     this.logger.log(`[Redeploy] Drizzle Migration success: ${stdout.trim()}`);
-                 } catch (err: any) {
-                     this.logger.error(`[Redeploy] ❌ Drizzle Migration failed: ${err.message}`);
-                 }
-            }
-
-            await this.fixOwnership(backendDir);
-            await this.triggerNodeRestart(backendDir);
-
-            this.logger.log(`[Redeploy] ✅ Redeployment complete for api-${clientName}`);
-        } catch (err: any) {
-            this.logger.error(`[Redeploy] ❌ Redeployment failed for api-${clientName}: ${err.message}`);
-            throw err;
+            if (stdout) this.logger.log(`[Redeploy] npm: ${stdout.trim()}`);
+            if (stderr) this.logger.warn(`[Redeploy] npm stderr: ${stderr.trim()}`);
         }
+
+        // ❌ مفيش migrations هنا (MongoDB مش محتاجها)
+
+        // 2️⃣ Fix permissions
+        await this.fixOwnership(backendDir);
+
+        // 3️⃣ Restart Node server
+        await this.triggerNodeRestart(backendDir);
+
+        this.logger.log(`[Redeploy] ✅ Redeployment complete for api-${clientName}`);
+    } catch (err: any) {
+        this.logger.error(`[Redeploy] ❌ Redeployment failed for api-${clientName}: ${err.message}`);
+        throw err;
     }
+}
 
     private async fixOwnership(dir: string): Promise<void> {
         this.logger.log(`[Permissions] Fixing ownership and permissions on ${dir}...`);
