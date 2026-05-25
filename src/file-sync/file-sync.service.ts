@@ -142,6 +142,20 @@ export class FileSyncService {
             }
         }
 
+        // Delete removed files
+        let deletedFilesCount = 0;
+        if (diff.deleted && diff.deleted.length > 0) {
+            for (const relPath of diff.deleted) {
+                const targetPath = path.join(targetDir, relPath);
+                try {
+                    await fs.rm(targetPath, { force: true, recursive: true });
+                    deletedFilesCount++;
+                } catch (err: any) {
+                    this.logger.warn(`Failed to delete old file ${relPath}: ${err.message}`);
+                }
+            }
+        }
+
         const completedAt = new Date();
 
         this.logger.log(

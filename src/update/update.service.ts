@@ -276,6 +276,15 @@ export class UpdateService {
             await this.injectApiUrlIntoBundle(paths.clientFrontend, clientApiUrl);
 
             await this.fixOwnership(paths.clientFrontend);
+
+            // Clear Next.js internal cache so it doesn't serve old pages
+            const nextCacheDir = path.join(paths.clientFrontend, '.next', 'cache');
+            try {
+                await fs.rm(nextCacheDir, { recursive: true, force: true });
+                this.logger.log(`[Frontend Rebuild] Cleared Next.js cache for ${clientName}`);
+            } catch (e) {
+                this.logger.warn(`[Frontend Rebuild] Could not clear Next.js cache: ${e}`);
+            }
             
             // 🔥 التعديل هنا: إجبار سيرفر الفرونت إند (Next.js) إنه يعمل ريستارت عشان يقرأ التعديلات
             this.logger.log(`[Frontend Rebuild] Triggering Next.js server restart for ${clientName}...`);
